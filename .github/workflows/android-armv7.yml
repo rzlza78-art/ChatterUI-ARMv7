@@ -1,0 +1,91 @@
+name: Android ARMv7 APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - build/armv7-ci
+    paths:
+      - "app/**"
+      - "assets/**"
+      - "components/**"
+      - "db/**"
+      - "lib/**"
+      - "expo-build-plugins/**"
+      - "package.json"
+      - "package-lock.json"
+      - "app.config.js"
+      - ".github/workflows/android-armv7.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build armeabi-v7a APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate native Android project
+        env:
+          APP_VARIANT: production
+        run: npx expo prebuild --clean --platform android
+
+      - name: Restrict build to 32-bit ARM
+        working-directory: android
+        run: |
+          if grep -q '^reactNativeArchitectures=' gradle.properties; then
+            sed -i 's/^reactNativeArchitectures=.*/reactNativeArchitectures=armeabi-v7a/' gradle.properties
+          else
+            echo 'reactNativeArchitectures=armeabi-v7a' >> gradle.properties
+          fi
+          echo 'Configured React Native architectures:'
+          grep '^reactNativeArchitectures=' gradle.properties
+
+      - name: Build release APK
+        working-directory: android
+        run: ./gradlew :app:assembleRelease --no-daemon --stacktrace
+
+      - name: Verify APK and inspect native ABIs
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="android/app/build/outputs/apk/release/app-release.apk"
+          test -f "$APK"
+          echo "APK size:"
+          du -h "$APK"
+          echo "Native library ABI folders:"
+          unzip -l "$APK" | grep -E 'lib/[^/]+/[^/]+\.so$' | sed -E 's#.*lib/([^/]+)/.*#\1#' | sort -u || true
+          if ! unzip -l "$APK" | grep -q 'lib/armeabi-v7a/'; then
+            echo "::error::The APK does not contain armeabi-v7a native libraries."
+            exit 1
+          fi
+
+      - name: Upload ARMv7 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ChatterUI-ARMv7-release
+          path: android/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
+          retention-days: 14
